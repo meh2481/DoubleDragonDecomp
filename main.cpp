@@ -40,10 +40,10 @@ typedef struct
 
 typedef struct
 {
-	uint32_t minx;
-	uint32_t maxx;
-	uint32_t miny;
-	uint32_t maxy;
+	float minx;
+	float maxx;
+	float miny;
+	float maxy;
 	uint32_t img_offset;	//Point to texHeader
 	uint32_t unk1;			//Probably image size or something
 	uint32_t pieceOffset;	//Point to PiecesDesc
@@ -53,7 +53,7 @@ typedef struct
 {
 	uint32_t numPieces;
 	//piece[]	//Followed by numPieces pieces
-} PiecesDesc;
+} piecesDesc;
 
 typedef struct
 {
@@ -149,10 +149,12 @@ FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxb
 	OutputSize.x = uint32_t(OutputSize.x);
 	OutputSize.y = uint32_t(OutputSize.y);
 
-	FIBITMAP* result = FreeImage_Allocate(OutputSize.x, OutputSize.y, 32);
+	FIBITMAP* result = FreeImage_Allocate(OutputSize.x+6, OutputSize.y+6, 32);
 
 	//Create image from this set of pixels
 	FIBITMAP* curImg = imageFromPixels(imgData, th.width, th.height);
+	
+	//cout << "outsize: " << OutputSize.x << ", " << OutputSize.y << endl;
 
 	//Patch image together from pieces
 	for(list<piece>::iterator lpi = pieces.begin(); lpi != pieces.end(); lpi++)
@@ -181,10 +183,11 @@ FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxb
 		{
 			BYTE* pixel = bits;
 			BYTE* destpixel = destBits;
-			destpixel += (unsigned)((DestPos.y + y)) * destpitch;
-			destpixel += (unsigned)((DestPos.x) * 4);
+			destpixel += (unsigned)((DestPos.y + y + 3)) * destpitch;
+			destpixel += (unsigned)((DestPos.x + 3) * 4);
 			for(int x = 0; x < srcW; x++)
 			{
+				//cout << x << "," << y << endl;
 				destpixel[FI_RGBA_RED] = pixel[FI_RGBA_RED];
 				destpixel[FI_RGBA_GREEN] = pixel[FI_RGBA_GREEN];
 				destpixel[FI_RGBA_BLUE] = pixel[FI_RGBA_BLUE];
@@ -200,7 +203,7 @@ FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxb
 	}
 	FreeImage_Unload(curImg);
 	
-	FIBITMAP* cropped = FreeImage_Copy(result, 4, 4, FreeImage_GetWidth(result) - 2, FreeImage_GetHeight(result) - 2);
+	FIBITMAP* cropped = FreeImage_Copy(result, 3, 3, FreeImage_GetWidth(result)-2, FreeImage_GetHeight(result)-2);
 	FreeImage_Unload(result);
 	
 	return cropped;
@@ -209,20 +212,23 @@ FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxb
 
 int splitImages(const char* cFilename)
 {
-	vector<uint8_t> vData;
+	//vector<uint8_t> vData;
+	uint8_t* fileData;
 	FILE* fh = fopen( cFilename, "rb" );
 	if(fh == NULL)
 	{
 		cerr << "Unable to open input file " << cFilename << endl;
 		return 1;
 	}
-	fseek( fh, 0, SEEK_END );
-	size_t fileSize = ftell( fh );
-	fseek( fh, 0, SEEK_SET );
-	vData.reserve( fileSize );
-	size_t amt = fread( vData.data(), fileSize, 1, fh );
-	fclose( fh );
+	fseek(fh, 0, SEEK_END);
+	size_t fileSize = ftell(fh);
+	fseek(fh, 0, SEEK_SET);
+	//vData.reserve( fileSize );
+	fileData = new uint8_t[fileSize];
+	size_t amt = fread(fileData, fileSize, 1, fh );
+	fclose(fh);
 	cout << "Splitting images from file " << cFilename << endl;
+	
 	
 	//Figure out what we'll be naming the images
 	string sName = cFilename;
@@ -238,35 +244,31 @@ int splitImages(const char* cFilename)
 		sName.erase(0, namepos+1);
 		
 	anbHeader ah;
-	memcpy(&ah, vData.data(), sizeof(anbHeader));
-	cout << "Num images: " << ah.numImages << endl;
+	memcpy(&ah, fileData, sizeof(anbHeader));
+	//cout << "Num images: " << ah.numImages << endl;
 	
-	/*for(int i = 0; i < 256; i+=4)
+	for(int iCurFile = 0; iCurFile < ah.numImages; iCurFile++)
 	{
-		float f = 0;
-		uint32_t iVal = 0;
-		memcpy(&f, &(vData.data()[i+sizeof(anbHeader)]), sizeof(float));
-		memcpy(&iVal, &(vData.data()[i+sizeof(anbHeader)]), sizeof(uint32_t));
-		cout << i+sizeof(anbHeader) << ": " << f << ", " << iVal << endl;
-	}
-	cout << endl;*/
-	
-	//Parse through, splitting out before each ZLFW header
-	int iCurFile = 0;
-	uint64_t startPos = 0;
-	for(uint64_t i = 0; i < fileSize; i+=4)	//Definitely not the fastest way to do it... but I don't care
-	{
-		if(memcmp ( &(vData.data()[i]), "ZLFW", 4 ) == 0)	//Found another file
-		{
-			bool bPieceTogether = g_bPieceTogether;
+		frameHeader fh;
+		memcpy(&fh, &fileData[ah.frameHeaderOffset+iCurFile*sizeof(frameHeader)], sizeof(frameHeader));
+		
+		texDesc td;
+		memcpy(&td, &fileData[fh.texDescOffset], sizeof(texDesc));
+		
+		//Read in pieces
+		
+		
+		//if(memcmp ( &(vData.data()[i]), "ZLFW", 4 ) == 0)	//Found another file
+		//{
+			//bool bPieceTogether = g_bPieceTogether;
 			//Get texture header
-			uint64_t headerPos = i - sizeof(texHeader);
+			//uint64_t headerPos = i - sizeof(texHeader);
 			texHeader th;
-			memcpy(&th, &(vData.data()[headerPos]), sizeof(texHeader));
+			memcpy(&th, &fileData[td.img_offset], sizeof(texHeader));
 			
 			//if(th.type != TEXTURE_TYPE_DXT1_COL_MUL)	//Type of image we don't support; skip
 			//{
-				cout << "Tex header: type=" << th.type << ", width=" << th.width << ", height=" << th.height << endl;
+				//cout << "Tex header: type=" << th.type << ", width=" << th.width << ", height=" << th.height << endl;
 				//continue;
 			//}
 				
@@ -293,25 +295,24 @@ int splitImages(const char* cFilename)
 			
 			//Decompress WFLZ data
 			uint32_t* chunk = NULL;
-			const uint32_t decompressedSize = wfLZ_GetDecompressedSize( &(vData.data()[i]) );
-			uint8_t* dst = ( uint8_t* )malloc( decompressedSize );
+			const uint32_t decompressedSize = wfLZ_GetDecompressedSize(&fileData[td.img_offset+sizeof(texHeader)]);
+			uint8_t* dst = (uint8_t*)malloc(decompressedSize);
 			uint32_t offset = 0;
 			int count = 0;
-			while( uint8_t* compressedBlock = wfLZ_ChunkDecompressLoop( &(vData.data())[i], &chunk ) )
+			while(uint8_t* compressedBlock = wfLZ_ChunkDecompressLoop(&fileData[td.img_offset+sizeof(texHeader)], &chunk))
 			{		
-				wfLZ_Decompress( compressedBlock, dst + offset );
-				const uint32_t blockSize = wfLZ_GetDecompressedSize( compressedBlock );
+				wfLZ_Decompress(compressedBlock, dst + offset);
+				const uint32_t blockSize = wfLZ_GetDecompressedSize(compressedBlock);
 				offset += blockSize;
 			}
 			
 			//Decompress image
 			uint8_t* color = NULL;
-			uint8_t* mul = NULL;
-			bool bUseMul = false;
+			//uint8_t* mul = NULL;
 			if(g_DecompressFlags != -1)
 				th.type = g_DecompressFlags;
 				
-			cout << "Decomp size: " << decompressedSize << ", w*h: " << th.width << "," << th.height << ", w*h*4:" << th.width * th.height * 4 << endl;
+			//cout << "Decomp size: " << decompressedSize << ", w*h: " << th.width << "," << th.height << ", w*h*4:" << th.width * th.height * 4 << endl;
 			
 			if(th.type == TEXTURE_TYPE_DXT1_COL)
 			{
@@ -373,7 +374,8 @@ int splitImages(const char* cFilename)
 			{
 				cout << "Decomp size: " << decompressedSize << ", w*h: " << th.width << "," << th.height << endl;
 				cout << "Warning: skipping unknown image type " << th.type << endl;
-				delete dst;
+				free(dst);
+				delete[] fileData;
 				continue;
 			}
 			
@@ -382,66 +384,74 @@ int splitImages(const char* cFilename)
 			//Read in pieces
 			Vec2 maxul;
 			Vec2 maxbr;
-			maxul.x = maxul.y = maxbr.x = maxbr.y = 0;
+			maxul.x = td.minx;
+			maxul.y = td.maxy;
+			maxbr.x = td.maxx;
+			maxbr.y = td.miny;
+			//maxul.x = maxul.y = maxbr.x = maxbr.y = 0;
 			list<piece> pieces;
-			
-			/*if(bPieceTogether)
+			if(g_bPieceTogether)
 			{
-				PiecesDesc pd;
-	
-				cout << "FD: " << fd.texOffset << ", " << fd.texDataSize << ", " << fd.pieceOffset << endl;
-
-				memcpy(&pd, &(vData.data()[fd.pieceOffset]), sizeof(PiecesDesc));
+				piecesDesc pd;
+				memcpy(&pd, &fileData[td.pieceOffset], sizeof(piecesDesc));
 				
-				cout << "PD: " << pd.numPieces << endl;
+				//cout << "PD: " << pd.numPieces << endl;
 				
 				for(uint32_t j = 0; j < pd.numPieces; j++)
 				{
 					piece p;
-					memcpy(&p, &(vData.data()[fd.pieceOffset+j*sizeof(piece)+sizeof(PiecesDesc)]), sizeof(piece));
+					memcpy(&p, &fileData[td.pieceOffset+j*sizeof(piece)+sizeof(piecesDesc)], sizeof(piece));
 					//Store our maximum values, so we know how large the image is
-					if(p.topLeft.x < maxul.x)
+					/*if(p.topLeft.x < maxul.x)
 						maxul.x = p.topLeft.x;
 					if(p.topLeft.y > maxul.y)
 						maxul.y = p.topLeft.y;
 					if(p.bottomRight.x > maxbr.x)
 						maxbr.x = p.bottomRight.x;
 					if(p.bottomRight.y < maxbr.y)
-						maxbr.y = p.bottomRight.y;
+						maxbr.y = p.bottomRight.y;*/
 					
 					//cout << "Piece: " << p.topLeft.x << ", " << p.topLeft.y << ", " << p.topLeftUV.x  << ", " << p.topLeftUV.y << ", " << p.bottomRight.x << ", " << p.bottomRight.y << ", " << p.bottomRightUV.x << ", " << p.bottomRightUV.y << endl;
 					
 					//Sanity check: Skip over piecing if there's only one piece total that fills the whole thing
-					if(pd.numPieces == 1 && p.topLeftUV.x == 0.0 && p.topLeftUV.y == 0.0 && p.bottomRightUV.x == 1.0 && p.bottomRightUV.y == 1.0) bPieceTogether = false;
+					//if(pd.numPieces == 1 && p.topLeftUV.x == 0.0 && p.topLeftUV.y == 0.0 && p.bottomRightUV.x == 1.0 && p.bottomRightUV.y == 1.0) bPieceTogether = false;
 					
 					pieces.push_back(p);
 				}
-			}*/
+			}
 			
-			uint8_t* dest_final = color;
+			//cout << "Maxul: " << maxul.x << ", " << maxul.y << " Maxbr: " << maxbr.x << ", " << maxbr.y << endl;
+			
+			//uint8_t* dest_final = color;
 			
 			FIBITMAP* result = NULL;
-			if(bPieceTogether && pieces.size())
-				result = PieceImage(dest_final, pieces, maxul, maxbr, th);
+			if(g_bPieceTogether && pieces.size())
+				result = PieceImage(color, pieces, maxul, maxbr, th);
 			else
-				result = imageFromPixels(dest_final, th.width, th.height);
+				result = imageFromPixels(color, th.width, th.height);
 			
 			ostringstream oss;
 			oss << "output/" << sName << '_' << iCurFile+1 << ".png";
 			cout << "Saving " << oss.str() << endl;
+			
+			//int width = FreeImage_GetWidth(result);
+			//int height = FreeImage_GetHeight(result);
+			//cout << "wh: " << width << "," << height << endl;
+			
 			FreeImage_Save(FIF_PNG, result, oss.str().c_str());
 			FreeImage_Unload(result);
 			
 			//Free allocated memory
-			if(dst != dest_final)
+			if(dst != color)
 				free(dst);
-			free(dest_final);
+			free(color);
 			//free(color);
 			//free(mul);
 			
-			iCurFile++;
-		}
+			//iCurFile++;
+		//}
 	}
+	delete[] fileData;
 	return 0;
 }
 
@@ -449,7 +459,7 @@ int main(int argc, char** argv)
 {
 	g_DecompressFlags = -1;
 	g_bSeparate = false;
-	g_bPieceTogether = false;
+	g_bPieceTogether = true;
 	g_bColOnly = g_bMulOnly = false;
 	FreeImage_Initialise();
 #ifdef _WIN32
