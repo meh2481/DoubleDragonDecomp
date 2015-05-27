@@ -13,6 +13,7 @@
 #include <list>
 #include <cmath>
 #include <cstring>
+#include <iomanip>
 using namespace std;
 
 int g_DecompressFlags;
@@ -21,14 +22,14 @@ bool g_bPieceTogether;
 bool g_bColOnly;
 bool g_bMulOnly;
 
-//Top of file
+//Top of ANB file
 typedef struct
 {
-	uint32_t unkOffset1;
+	uint32_t unknown0;
 	uint32_t unknown1;
 	uint32_t numImages;
-	uint32_t numUnknown1;
-	uint32_t unknown2; 	//Always 0x00 01 A0 01 ?
+	uint32_t unknown2;
+	uint32_t unknown3; 	//Always 0x00 01 A0 01 ?
 	uint32_t frameHeaderOffset;	//point to frameHeader
 }anbHeader;
 
@@ -40,12 +41,12 @@ typedef struct
 
 typedef struct
 {
-	float minx;
-	float maxx;
-	float miny;
-	float maxy;
+	float minx;				//Size of reconstructed image after piecing
+	float maxx;				//	|
+	float miny;				//	|
+	float maxy;				//	V
 	uint32_t img_offset;	//Point to texHeader
-	uint32_t unk1;			//Probably image size or something
+	uint32_t unknown0;		//Probably image size or something
 	uint32_t pieceOffset;	//Point to PiecesDesc
 }texDesc;
 
@@ -61,17 +62,8 @@ typedef struct
 	uint32_t width;
 	uint32_t height;
 	uint32_t unknown1[5];
-	//uint8_t data[]
+	//uint8_t data[]	//Followed by image data
 } texHeader;
-
-/*typedef struct  
-{
-	int      unknown0[4];
-	uint64_t texOffset; // offset from start of file to TexDesc
-	int      texDataSize;
-	int      unknown1;
-	uint64_t pieceOffset; // offset from start of file to PiecesDesc
-} FrameDesc;*/
 
 typedef struct
 {
@@ -149,12 +141,11 @@ FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxb
 	OutputSize.x = uint32_t(OutputSize.x);
 	OutputSize.y = uint32_t(OutputSize.y);
 
+	//My math seems off, so rather than solving the problem, create larger than needed then crop. Hooray!
 	FIBITMAP* result = FreeImage_Allocate(OutputSize.x+6, OutputSize.y+6, 32);
 
 	//Create image from this set of pixels
 	FIBITMAP* curImg = imageFromPixels(imgData, th.width, th.height);
-	
-	//cout << "outsize: " << OutputSize.x << ", " << OutputSize.y << endl;
 
 	//Patch image together from pieces
 	for(list<piece>::iterator lpi = pieces.begin(); lpi != pieces.end(); lpi++)
@@ -173,7 +164,6 @@ FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxb
 		BYTE* destBits = (BYTE*)FreeImage_GetBits(result);
 		Vec2 DestPos = CenterPos;
 		DestPos.x += lpi->topLeft.x;
-		//DestPos.y -= lpi->topLeft.y;
 		DestPos.y = OutputSize.y - srcH;
 		DestPos.y -= CenterPos.y;
 		DestPos.y += lpi->topLeft.y;
@@ -187,12 +177,10 @@ FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxb
 			destpixel += (unsigned)((DestPos.x + 3) * 4);
 			for(int x = 0; x < srcW; x++)
 			{
-				//cout << x << "," << y << endl;
 				destpixel[FI_RGBA_RED] = pixel[FI_RGBA_RED];
 				destpixel[FI_RGBA_GREEN] = pixel[FI_RGBA_GREEN];
 				destpixel[FI_RGBA_BLUE] = pixel[FI_RGBA_BLUE];
-				//if(pixel[FI_RGBA_ALPHA] != 0)
-					destpixel[FI_RGBA_ALPHA] = pixel[FI_RGBA_ALPHA];
+				destpixel[FI_RGBA_ALPHA] = pixel[FI_RGBA_ALPHA];
 				pixel += 4;
 				destpixel += 4;
 			}
@@ -203,16 +191,15 @@ FIBITMAP* PieceImage(uint8_t* imgData, list<piece> pieces, Vec2 maxul, Vec2 maxb
 	}
 	FreeImage_Unload(curImg);
 	
+	//Crop edges from final image
 	FIBITMAP* cropped = FreeImage_Copy(result, 3, 3, FreeImage_GetWidth(result)-2, FreeImage_GetHeight(result)-2);
 	FreeImage_Unload(result);
 	
 	return cropped;
 }
 
-
 int splitImages(const char* cFilename)
 {
-	//vector<uint8_t> vData;
 	uint8_t* fileData;
 	FILE* fh = fopen( cFilename, "rb" );
 	if(fh == NULL)
@@ -223,7 +210,6 @@ int splitImages(const char* cFilename)
 	fseek(fh, 0, SEEK_END);
 	size_t fileSize = ftell(fh);
 	fseek(fh, 0, SEEK_SET);
-	//vData.reserve( fileSize );
 	fileData = new uint8_t[fileSize];
 	size_t amt = fread(fileData, fileSize, 1, fh );
 	fclose(fh);
@@ -243,213 +229,159 @@ int splitImages(const char* cFilename)
 	if(namepos != string::npos)
 		sName.erase(0, namepos+1);
 		
+	//Create the folder we'll be saving into
+	#ifdef _WIN32
+		string sOutDir = "output/";
+		sOutDir += sName;
+		CreateDirectory(TEXT(sOutDir.c_str()), NULL);
+	#else
+		#error Do something here to create folder
+	#endif
+		
+	//Read file header
 	anbHeader ah;
 	memcpy(&ah, fileData, sizeof(anbHeader));
-	//cout << "Num images: " << ah.numImages << endl;
 	
+	//Loop for each image in file
 	for(int iCurFile = 0; iCurFile < ah.numImages; iCurFile++)
 	{
+		//Follow offset pointers until we get to the image data
+		//Frame header offset
 		frameHeader fh;
 		memcpy(&fh, &fileData[ah.frameHeaderOffset+iCurFile*sizeof(frameHeader)], sizeof(frameHeader));
 		
+		//Texture description offset
 		texDesc td;
 		memcpy(&td, &fileData[fh.texDescOffset], sizeof(texDesc));
 		
+		//Texture header offset
+		texHeader th;
+		memcpy(&th, &fileData[td.img_offset], sizeof(texHeader));
+		
+		//Decompress WFLZ data
+		uint32_t* chunk = NULL;
+		const uint32_t decompressedSize = wfLZ_GetDecompressedSize(&fileData[td.img_offset+sizeof(texHeader)]);
+		uint8_t* dst = (uint8_t*)malloc(decompressedSize);
+		uint32_t offset = 0;
+		int count = 0;
+		while(uint8_t* compressedBlock = wfLZ_ChunkDecompressLoop(&fileData[td.img_offset+sizeof(texHeader)], &chunk))
+		{		
+			wfLZ_Decompress(compressedBlock, dst + offset);
+			const uint32_t blockSize = wfLZ_GetDecompressedSize(compressedBlock);
+			offset += blockSize;
+		}
+		
+		//Decompress image
+		uint8_t* color = NULL;
+		if(g_DecompressFlags != -1)
+			th.type = g_DecompressFlags;
+		
+		if(th.type == TEXTURE_TYPE_DXT1_COL)
+		{
+			color = (uint8_t*)malloc(decompressedSize * 8);
+			squish::DecompressImage(color, th.width, th.height, dst, squish::kDxt1);
+		}
+		else if(th.type == TEXTURE_TYPE_DXT5_COL)
+		{
+			color = (uint8_t*)malloc(th.width * th.height * 4);
+			squish::DecompressImage(color, th.width, th.height, dst, squish::kDxt5);
+		}
+		else if(th.type == TEXTURE_TYPE_256_COL)
+		{
+			//Read in palette
+			vector<pixel> palette;
+			uint8_t* cur_data_ptr = dst;
+			for(uint32_t curPixel = 0; curPixel < PALETTE_SIZE; curPixel++)
+			{
+				pixel p;
+				p.r = *cur_data_ptr++;
+				p.g = *cur_data_ptr++;
+				p.b = *cur_data_ptr++;
+				p.a = *cur_data_ptr++;
+				palette.push_back(p);
+			}
+			
+			//Fill in image
+			color = (uint8_t*)malloc(th.width * th.height * 4);
+			uint8_t* cur_color_ptr = color;
+			for(uint32_t curPixel = 0; curPixel < th.width * th.height; curPixel++)
+			{
+				*cur_color_ptr++ = palette[*cur_data_ptr].b;
+				*cur_color_ptr++ = palette[*cur_data_ptr].g;
+				*cur_color_ptr++ = palette[*cur_data_ptr].r;
+				*cur_color_ptr++ = palette[*cur_data_ptr].a;
+				cur_data_ptr++;
+			}
+		}
+		else if(th.type == TEXTURE_TYPE_RAW)
+		{
+			//Swap BGR/RGB
+			color = (uint8_t*)malloc(th.width * th.height * 4);
+			uint8_t* cur_color_ptr = color;
+			uint8_t* cur_dst_ptr = dst;
+			for(uint32_t curPixel = 0; curPixel < th.width * th.height; curPixel++)
+			{
+				uint8_t d_R = *cur_dst_ptr++;
+				uint8_t d_G = d_R;
+				uint8_t d_B = d_R;
+				uint8_t d_A = 255;
+				
+				*cur_color_ptr++ = d_B;
+				*cur_color_ptr++ = d_G;
+				*cur_color_ptr++ = d_R;
+				*cur_color_ptr++ = d_A;
+			}
+		}
+		else
+		{
+			cout << "Decomp size: " << decompressedSize << ", w*h: " << th.width << "," << th.height << endl;
+			cout << "Warning: skipping unknown image type " << th.type << endl;
+			free(dst);
+			delete[] fileData;
+			continue;
+		}
+		
 		//Read in pieces
+		Vec2 maxul;
+		Vec2 maxbr;
+		maxul.x = td.minx;
+		maxul.y = td.maxy;
+		maxbr.x = td.maxx;
+		maxbr.y = td.miny;
+		list<piece> pieces;
+		if(g_bPieceTogether)
+		{
+			//Read pieces header
+			piecesDesc pd;
+			memcpy(&pd, &fileData[td.pieceOffset], sizeof(piecesDesc));
+			
+			for(uint32_t j = 0; j < pd.numPieces; j++)
+			{
+				//Store next piece
+				piece p;
+				memcpy(&p, &fileData[td.pieceOffset+j*sizeof(piece)+sizeof(piecesDesc)], sizeof(piece));
+				pieces.push_back(p);
+			}
+		}
 		
+		//Piece final image together
+		FIBITMAP* result = NULL;
+		if(g_bPieceTogether && pieces.size())
+			result = PieceImage(color, pieces, maxul, maxbr, th);
+		else
+			result = imageFromPixels(color, th.width, th.height);
 		
-		//if(memcmp ( &(vData.data()[i]), "ZLFW", 4 ) == 0)	//Found another file
-		//{
-			//bool bPieceTogether = g_bPieceTogether;
-			//Get texture header
-			//uint64_t headerPos = i - sizeof(texHeader);
-			texHeader th;
-			memcpy(&th, &fileData[td.img_offset], sizeof(texHeader));
-			
-			//if(th.type != TEXTURE_TYPE_DXT1_COL_MUL)	//Type of image we don't support; skip
-			//{
-				//cout << "Tex header: type=" << th.type << ", width=" << th.width << ", height=" << th.height << endl;
-				//continue;
-			//}
-				
-			//Search for frame header if we're going to be piecing these together
-			/*FrameDesc fd;
-			if(bPieceTogether)
-			{
-				if(iCurFile == 0)	//First one tells us where to start searching backwards from
-					startPos = i;
-				for(int k = startPos - sizeof(texHeader) - sizeof(FrameDesc); k > 0; k -= 4)
-				{
-					memcpy(&fd, &(vData.data()[k]), sizeof(FrameDesc));
-					if(fd.texOffset != headerPos) continue;
-					//Sanity check
-					if(fd.texDataSize > 6475888) continue;	//TODO: Test to make sure data size matches
-					if(fd.texOffset == 0 || fd.pieceOffset == 0) continue;
-					if(fd.pieceOffset > fileSize) continue;
-					
-					//Ok, found our header
-					//cout << "Found header " << endl;
-					break;
-				}
-			}*/
-			
-			//Decompress WFLZ data
-			uint32_t* chunk = NULL;
-			const uint32_t decompressedSize = wfLZ_GetDecompressedSize(&fileData[td.img_offset+sizeof(texHeader)]);
-			uint8_t* dst = (uint8_t*)malloc(decompressedSize);
-			uint32_t offset = 0;
-			int count = 0;
-			while(uint8_t* compressedBlock = wfLZ_ChunkDecompressLoop(&fileData[td.img_offset+sizeof(texHeader)], &chunk))
-			{		
-				wfLZ_Decompress(compressedBlock, dst + offset);
-				const uint32_t blockSize = wfLZ_GetDecompressedSize(compressedBlock);
-				offset += blockSize;
-			}
-			
-			//Decompress image
-			uint8_t* color = NULL;
-			//uint8_t* mul = NULL;
-			if(g_DecompressFlags != -1)
-				th.type = g_DecompressFlags;
-				
-			//cout << "Decomp size: " << decompressedSize << ", w*h: " << th.width << "," << th.height << ", w*h*4:" << th.width * th.height * 4 << endl;
-			
-			if(th.type == TEXTURE_TYPE_DXT1_COL)
-			{
-				color = (uint8_t*)malloc(decompressedSize * 8);
-				squish::DecompressImage(color, th.width, th.height, dst, squish::kDxt1);
-			}
-			else if(th.type == TEXTURE_TYPE_DXT5_COL)
-			{
-				color = (uint8_t*)malloc(th.width * th.height * 4);
-				squish::DecompressImage(color, th.width, th.height, dst, squish::kDxt5);
-			}
-			else if(th.type == TEXTURE_TYPE_256_COL)
-			{
-				//Read in palette
-				vector<pixel> palette;
-				uint8_t* cur_data_ptr = dst;
-				for(uint32_t curPixel = 0; curPixel < PALETTE_SIZE; curPixel++)
-				{
-					pixel p;
-					p.r = *cur_data_ptr++;
-					p.g = *cur_data_ptr++;
-					p.b = *cur_data_ptr++;
-					p.a = *cur_data_ptr++;
-					palette.push_back(p);
-				}
-				
-				//Fill in image
-				color = (uint8_t*)malloc(th.width * th.height * 4);
-				uint8_t* cur_color_ptr = color;
-				for(uint32_t curPixel = 0; curPixel < th.width * th.height; curPixel++)
-				{
-					*cur_color_ptr++ = palette[*cur_data_ptr].b;
-					*cur_color_ptr++ = palette[*cur_data_ptr].g;
-					*cur_color_ptr++ = palette[*cur_data_ptr].r;
-					*cur_color_ptr++ = palette[*cur_data_ptr].a;
-					cur_data_ptr++;
-				}
-			}
-			else if(th.type == TEXTURE_TYPE_RAW)
-			{
-				//Swap BGR/RGB
-				color = (uint8_t*)malloc(th.width * th.height * 4);
-				uint8_t* cur_color_ptr = color;
-				uint8_t* cur_dst_ptr = dst;
-				for(uint32_t curPixel = 0; curPixel < th.width * th.height; curPixel++)
-				{
-					uint8_t d_R = *cur_dst_ptr++;
-					uint8_t d_G = d_R;
-					uint8_t d_B = d_R;
-					uint8_t d_A = 255;
-					
-					*cur_color_ptr++ = d_B;
-					*cur_color_ptr++ = d_G;
-					*cur_color_ptr++ = d_R;
-					*cur_color_ptr++ = d_A;
-				}
-			}
-			else
-			{
-				cout << "Decomp size: " << decompressedSize << ", w*h: " << th.width << "," << th.height << endl;
-				cout << "Warning: skipping unknown image type " << th.type << endl;
-				free(dst);
-				delete[] fileData;
-				continue;
-			}
-			
-			//cout << "Decomp size: " << decompressedSize << ", w*h: " << th.width << "," << th.height << endl;
-			
-			//Read in pieces
-			Vec2 maxul;
-			Vec2 maxbr;
-			maxul.x = td.minx;
-			maxul.y = td.maxy;
-			maxbr.x = td.maxx;
-			maxbr.y = td.miny;
-			//maxul.x = maxul.y = maxbr.x = maxbr.y = 0;
-			list<piece> pieces;
-			if(g_bPieceTogether)
-			{
-				piecesDesc pd;
-				memcpy(&pd, &fileData[td.pieceOffset], sizeof(piecesDesc));
-				
-				//cout << "PD: " << pd.numPieces << endl;
-				
-				for(uint32_t j = 0; j < pd.numPieces; j++)
-				{
-					piece p;
-					memcpy(&p, &fileData[td.pieceOffset+j*sizeof(piece)+sizeof(piecesDesc)], sizeof(piece));
-					//Store our maximum values, so we know how large the image is
-					/*if(p.topLeft.x < maxul.x)
-						maxul.x = p.topLeft.x;
-					if(p.topLeft.y > maxul.y)
-						maxul.y = p.topLeft.y;
-					if(p.bottomRight.x > maxbr.x)
-						maxbr.x = p.bottomRight.x;
-					if(p.bottomRight.y < maxbr.y)
-						maxbr.y = p.bottomRight.y;*/
-					
-					//cout << "Piece: " << p.topLeft.x << ", " << p.topLeft.y << ", " << p.topLeftUV.x  << ", " << p.topLeftUV.y << ", " << p.bottomRight.x << ", " << p.bottomRight.y << ", " << p.bottomRightUV.x << ", " << p.bottomRightUV.y << endl;
-					
-					//Sanity check: Skip over piecing if there's only one piece total that fills the whole thing
-					//if(pd.numPieces == 1 && p.topLeftUV.x == 0.0 && p.topLeftUV.y == 0.0 && p.bottomRightUV.x == 1.0 && p.bottomRightUV.y == 1.0) bPieceTogether = false;
-					
-					pieces.push_back(p);
-				}
-			}
-			
-			//cout << "Maxul: " << maxul.x << ", " << maxul.y << " Maxbr: " << maxbr.x << ", " << maxbr.y << endl;
-			
-			//uint8_t* dest_final = color;
-			
-			FIBITMAP* result = NULL;
-			if(g_bPieceTogether && pieces.size())
-				result = PieceImage(color, pieces, maxul, maxbr, th);
-			else
-				result = imageFromPixels(color, th.width, th.height);
-			
-			ostringstream oss;
-			oss << "output/" << sName << '_' << iCurFile+1 << ".png";
-			cout << "Saving " << oss.str() << endl;
-			
-			//int width = FreeImage_GetWidth(result);
-			//int height = FreeImage_GetHeight(result);
-			//cout << "wh: " << width << "," << height << endl;
-			
-			FreeImage_Save(FIF_PNG, result, oss.str().c_str());
-			FreeImage_Unload(result);
-			
-			//Free allocated memory
-			if(dst != color)
-				free(dst);
-			free(color);
-			//free(color);
-			//free(mul);
-			
-			//iCurFile++;
-		//}
+		//Save final image
+		ostringstream oss;
+		oss << "output/" << sName << "/" << setfill('0') << setw(3) << iCurFile+1 << ".png";
+		cout << "Saving " << oss.str() << endl;	
+		FreeImage_Save(FIF_PNG, result, oss.str().c_str());
+		FreeImage_Unload(result);
+		
+		//Free allocated memory
+		if(dst != color)
+			free(dst);
+		free(color);
 	}
 	delete[] fileData;
 	return 0;
